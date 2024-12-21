@@ -2,7 +2,7 @@
 
 use alloy::{
   core::rlp::{Encodable, encode_fixed_size},
-  primitives::{Address, Bloom, B256, Log, U256},
+  primitives::B256,
 };
 use alloy_trie::HashBuilder;
 use nybbles::Nibbles;

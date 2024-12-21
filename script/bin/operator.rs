@@ -1,29 +1,25 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
-    core::rlp::Encodable,
-    consensus::{Receipt, TxReceipt},
     eips::BlockNumberOrTag,
     network::{Ethereum, EthereumWallet},
-    primitives::{Address, Bloom, B256, Log, U256},
+    primitives::{Address, B256, U256},
     providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Identity, Provider, ProviderBuilder, RootProvider,
     },
-    rpc::types::TransactionReceipt,
     signers::local::PrivateKeySigner,
     sol,
     transports::http::{Client, Http}
 };
-// use alloy_merkle_tree::tree::MerkleTree;
 use anyhow::Result;
-use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::{BeaconBlock, ExecutionPayload}};
+use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
 use helios_ethereum::consensus::Inner;
 use helios_ethereum::rpc::http_rpc::HttpRpc;
 use helios_ethereum::rpc::ConsensusRpc;
 use log::{error, info};
 use sp1_helios_primitives::types::ProofInputs;
 use sp1_helios_script::{*, receipt::*, trie::*};
-use sp1_sdk::{network::proto::network::twirp::axum::extract::FromRef, ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
+use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
 use ssz_rs::prelude::*;
 use std::env;
 use std::sync::Arc;
@@ -176,13 +172,14 @@ impl SP1LightClientOperator {
 
 
         // TODO: Hardcoded values for now
-        let target_block: u64 = 6000; // TODO move to argument
+        // let target_block: u64 = 6000; // TODO move to argument
+        let target_block: u64 = latest_block;
 
-        // Introspect target block
-        if latest_block < target_block {
-            info!("Target block not reached, yet.");
-            return Ok(None);
-        }
+        // // Introspect target block
+        // if latest_block < target_block {
+        //     info!("Target block not reached, yet.");
+        //     return Ok(None);
+        // }
 
         let consensus_block: BeaconBlock<MainnetConsensusSpec> = client.rpc.get_block(target_block).await.unwrap();
         let execution_payload = consensus_block.body.execution_payload();
@@ -191,7 +188,8 @@ impl SP1LightClientOperator {
         let receipts_root = execution_payload.receipts_root();
         let receipts = self.wallet_filler.get_block_receipts(block).await.unwrap().unwrap();
 
-        let computed_receipts_root = ordered_trie_root_with_encoder(receipts, |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
+        let computed_receipts_root = ordered_trie_root_with_encoder(receipts.as_slice(), |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
+        println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
 
         // for receipt in receipts {
 
