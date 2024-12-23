@@ -1,24 +1,24 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
+    eips::BlockNumberOrTag,
     network::{Ethereum, EthereumWallet},
-    primitives::Address,
+    primitives::{Address, B256, U256},
     providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Identity, Provider, ProviderBuilder, RootProvider,
     },
     signers::local::PrivateKeySigner,
     sol,
-    transports::http::{Client, Http},
+    transports::http::{Client, Http}
 };
-use alloy_primitives::{B256, U256};
 use anyhow::Result;
-use helios_consensus_core::consensus_spec::MainnetConsensusSpec;
+use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
 use helios_ethereum::consensus::Inner;
 use helios_ethereum::rpc::http_rpc::HttpRpc;
 use helios_ethereum::rpc::ConsensusRpc;
 use log::{error, info};
 use sp1_helios_primitives::types::ProofInputs;
-use sp1_helios_script::*;
+use sp1_helios_script::{*, receipt::*, trie::*};
 use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
 use ssz_rs::prelude::*;
 use std::env;
@@ -127,6 +127,9 @@ impl SP1LightClientOperator {
     async fn request_update(
         &self,
         mut client: Inner<MainnetConsensusSpec, HttpRpc>,
+        // target_block: u64,
+        // contract_address,
+        // event
     ) -> Result<Option<SP1ProofWithPublicValues>> {
         // Fetch required values.
         let contract = SP1LightClient::new(self.contract_address, self.wallet_filler.clone());
@@ -161,10 +164,39 @@ impl SP1LightClientOperator {
 
         // Check if contract is up to date
         let latest_block = finality_update.finalized_header.beacon().slot;
+
         if latest_block <= head {
             info!("Contract is up to date. Nothing to update.");
             return Ok(None);
         }
+
+
+        // TODO: Hardcoded values for now
+        // let target_block: u64 = 6000; // TODO move to argument
+        let target_block: u64 = latest_block;
+
+        // // Introspect target block
+        // if latest_block < target_block {
+        //     info!("Target block not reached, yet.");
+        //     return Ok(None);
+        // }
+
+        let consensus_block: BeaconBlock<MainnetConsensusSpec> = client.rpc.get_block(target_block).await.unwrap();
+        let execution_payload = consensus_block.body.execution_payload();
+
+        let block = BlockNumberOrTag::from(*execution_payload.block_number());
+        let receipts_root = execution_payload.receipts_root();
+        let receipts = self.wallet_filler.get_block_receipts(block).await.unwrap().unwrap();
+
+        let computed_receipts_root = ordered_trie_root_with_encoder(receipts.as_slice(), |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
+        println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
+
+        // for receipt in receipts {
+
+        //     let encoder = ReceiptWithBloomEncoder::new(&receipt);
+        //     encoder.encode(out);
+        // }
+
 
         // Optimization:
         // Skip processing update inside program if next_sync_committee is already stored in contract.
