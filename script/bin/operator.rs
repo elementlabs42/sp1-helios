@@ -1,15 +1,9 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
-    eips::BlockNumberOrTag,
-    network::{Ethereum, EthereumWallet},
-    primitives::{Address, B256, U256},
-    providers::{
+    eips::BlockNumberOrTag, network::{Ethereum, EthereumWallet}, primitives::{Address, B256, U256}, providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Identity, Provider, ProviderBuilder, RootProvider,
-    },
-    signers::local::PrivateKeySigner,
-    sol,
-    transports::http::{Client, Http}
+    }, rpc::types::TransactionReceipt, signers::local::PrivateKeySigner, sol, transports::http::{Client, Http}
 };
 use anyhow::Result;
 use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
@@ -171,9 +165,13 @@ impl SP1LightClientOperator {
         }
 
 
+        println!("174");
+
         // TODO: Hardcoded values for now
-        // let target_block: u64 = 6000; // TODO move to argument
-        let target_block: u64 = latest_block;
+        let target_block: u64 = 10663776; // TODO move to argument
+        // let target_block: u64 = latest_block;
+
+        println!("Target consensus block: {:?}", target_block);
 
         // // Introspect target block
         // if latest_block < target_block {
@@ -182,14 +180,46 @@ impl SP1LightClientOperator {
         // }
 
         let consensus_block: BeaconBlock<MainnetConsensusSpec> = client.rpc.get_block(target_block).await.unwrap();
+
         let execution_payload = consensus_block.body.execution_payload();
 
         let block = BlockNumberOrTag::from(*execution_payload.block_number());
-        let receipts_root = execution_payload.receipts_root();
-        let receipts = self.wallet_filler.get_block_receipts(block).await.unwrap().unwrap();
 
-        let computed_receipts_root = ordered_trie_root_with_encoder(receipts.as_slice(), |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
-        println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
+        println!("Execution block: {:?} (hash: {:?})", block, execution_payload.block_hash());
+
+        let receipts_root = execution_payload.receipts_root();
+
+        // self.wallet_filler target client
+
+        let rpc_url = env::var("SOURCE_EXECUTION_RPC_URL")
+            .expect("SOURCE_EXECUTION_RPC_URL not set")
+            .parse()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
+            .on_http(rpc_url);
+
+        let mut receipts: Option<Vec<TransactionReceipt>> = None;
+        match provider.get_block_receipts(block).await {
+            Ok(response) => {
+                receipts = response;
+            }
+            Err(err) => {
+                println!("Request error: {:?}", err);
+            }
+        }
+
+        if receipts.is_some() {
+            let computed_receipts_root = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
+            println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
+        } else {
+            println!("No receipts: {:?}", receipts);
+        }
+
+
+        panic!("FINISHED: SKIP UPDATE"); // TODO
+
 
         // for receipt in receipts {
 
