@@ -62,9 +62,8 @@ impl<'a> ReceiptWithBloomEncoder<'a> {
   fn receipt_rlp_header(&self) -> Header {
       let mut rlp_head = Header { list: true, payload_length: 0 };
 
-      // rlp_head.payload_length += self.receipt.success.length();
+      rlp_head.payload_length += self.raw_receipt().status().length();
       rlp_head.payload_length += self.raw_receipt().cumulative_gas_used().length();
-      // rlp_head.payload_length += self.bloom.length();
       rlp_head.payload_length += self.raw_receipt().logs_bloom().length();
       rlp_head.payload_length += self.raw_logs().length();
 
@@ -85,7 +84,6 @@ impl<'a> ReceiptWithBloomEncoder<'a> {
   fn encode_fields(&self, out: &mut dyn BufMut) {
       self.receipt_rlp_header().encode(out);
 
-      // self.receipt.success.encode(out);
       self.raw_receipt().status().encode(out);
       self.raw_receipt().cumulative_gas_used().encode(out);
       self.raw_receipt().logs_bloom().encode(out);
