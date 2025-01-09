@@ -1,9 +1,9 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
-    eips::BlockNumberOrTag, network::{Ethereum, EthereumWallet}, primitives::{Address, B256, U256}, providers::{
+    eips::{BlockId, BlockNumberOrTag}, network::{Ethereum, EthereumWallet}, primitives::{Address, B256, U256}, providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Identity, Provider, ProviderBuilder, RootProvider,
-    }, rpc::types::TransactionReceipt, signers::local::PrivateKeySigner, sol, transports::http::{Client, Http}
+    }, rpc::types::{Block, BlockTransactionsKind, TransactionReceipt}, signers::local::PrivateKeySigner, sol, transports::http::{Client, Http}
 };
 use anyhow::Result;
 use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
@@ -12,7 +12,7 @@ use helios_ethereum::rpc::http_rpc::HttpRpc;
 use helios_ethereum::rpc::ConsensusRpc;
 use log::{error, info};
 use sp1_helios_primitives::types::ProofInputs;
-use sp1_helios_script::{*, receipt::*, trie::*};
+use sp1_helios_script::{*, block_header::*, receipt::*, trie::*};
 use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
 use ssz_rs::prelude::*;
 use std::env;
@@ -183,9 +183,9 @@ impl SP1LightClientOperator {
 
         let execution_payload = consensus_block.body.execution_payload();
 
-        let block = BlockNumberOrTag::from(*execution_payload.block_number());
+        let block_number = BlockNumberOrTag::from(*execution_payload.block_number());
 
-        println!("Execution block: {:?} (hash: {:?})", block, execution_payload.block_hash());
+        println!("Execution block: {:?} (hash: {:?})", block_number, execution_payload.block_hash());
 
         let receipts_root = execution_payload.receipts_root();
 
@@ -201,7 +201,7 @@ impl SP1LightClientOperator {
             .on_http(rpc_url);
 
         let mut receipts: Option<Vec<TransactionReceipt>> = None;
-        match provider.get_block_receipts(block).await {
+        match provider.get_block_receipts(block_number).await {
             Ok(response) => {
                 receipts = response;
             }
@@ -214,18 +214,31 @@ impl SP1LightClientOperator {
             let computed_receipts_root = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
             println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
         } else {
-            println!("No receipts: {:?}", receipts);
+            println!("No receipts found: {:?}", receipts);
+        }
+
+        let mut block: Option<Block> = None;
+        match provider.get_block(BlockId::from(block_number), BlockTransactionsKind::Hashes).await {
+            Ok(response) => {
+                block = response;
+            }
+            Err(err) => {
+                println!("Request error: {:?}", err);
+            }
+        }
+
+        if block.is_some() {
+            let header = block.unwrap().header;
+            let block_header = BlockHeader::from(&header);
+            let computed_block_hash = block_header.compute_block_hash();
+            println!("Block hash {:?}, computed: {:?}", header.hash, computed_block_hash);
+
+        } else {
+            println!("No block found: {:?}", block);
         }
 
 
         panic!("FINISHED: SKIP UPDATE"); // TODO
-
-
-        // for receipt in receipts {
-
-        //     let encoder = ReceiptWithBloomEncoder::new(&receipt);
-        //     encoder.encode(out);
-        // }
 
 
         // Optimization:
