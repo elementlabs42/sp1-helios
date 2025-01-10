@@ -218,7 +218,7 @@ impl SP1LightClientOperator {
         }
 
         let mut block: Option<Block> = None;
-        match provider.get_block(BlockId::from(block_number), BlockTransactionsKind::Hashes).await {
+        match provider.get_block(BlockId::from(block_number), BlockTransactionsKind::Full).await {
             Ok(response) => {
                 block = response;
             }
@@ -230,7 +230,7 @@ impl SP1LightClientOperator {
         if block.is_some() {
             let header = block.unwrap().header;
             let block_header = BlockHeader::from(&header);
-            let computed_block_hash = block_header.compute_block_hash();
+            let computed_block_hash = block_header.hash_slow();
             println!("Block hash {:?}, computed: {:?}", header.hash, computed_block_hash);
 
         } else {

@@ -1,4 +1,5 @@
 /// Adapted from reth: https://github.com/paradigmxyz/reth/blob/v1.0.1/crates/primitives-traits/src/header/mod.rs
+/// Merged with alloy: https://github.com/alloy-rs/alloy/blob/main/crates/consensus/src/block/header.rs
 use alloy::{
   core::rlp::{bytes::BufMut, length_of_length, Encodable, Header},
   primitives::{keccak256, Address, BlockNumber, Bloom, Bytes, B256, B64, U256},
@@ -50,7 +51,7 @@ pub struct BlockHeader {
   pub mix_hash: B256,
   /// A 64-bit value which, combined with the mixhash, proves that a sufficient amount of
   /// computation has been carried out on this block; formally Hn.
-  pub nonce: u64,
+  pub nonce: B64,
   /// A scalar representing EIP1559 base fee which can move up or down each block according
   /// to a formula which is a function of gas used in parent block and gas target
   /// (block gas limit divided by elasticity multiplier) of parent block.
@@ -101,8 +102,8 @@ impl BlockHeader {
             gas_used: header.gas_used as u64, // Convert to U64
             timestamp: header.timestamp,
             mix_hash: header.mix_hash.unwrap(),
-            nonce: u64::from_be_bytes(header.nonce.unwrap().into()), // Convert to U64
-            base_fee_per_gas: header.nonce.map(|fixed_bytes| u64::from_be_bytes(fixed_bytes.into())), // Convert from U128 to U64
+            nonce: header.nonce.unwrap(),
+            base_fee_per_gas: header.base_fee_per_gas.map(|value| value as u64), // Convert from U128 to U64
             blob_gas_used: header.blob_gas_used.map(|value| value as u64), // Convert from U128 to U64
             excess_blob_gas: header.excess_blob_gas.map(|value| value as u64), // Convert from U128 to U64
             parent_beacon_block_root: header.parent_beacon_block_root,
@@ -111,10 +112,12 @@ impl BlockHeader {
         }
     }
 
-    pub fn compute_block_hash(&self) -> B256 {
-        let mut buf = Vec::new();
-        self.encode(&mut buf);
-        keccak256(buf)
+    /// Heavy function that will calculate hash of data and will *not* save the change to metadata.
+    /// Use [`Header::seal`], [`SealedHeader`] and unlock if you need hash to be persistent.
+    pub fn hash_slow(&self) -> B256 {
+        let mut out = Vec::<u8>::new();
+        self.encode(&mut out);
+        keccak256(&out)
     }
 
     fn header_payload_length(&self) -> usize {
@@ -133,7 +136,7 @@ impl BlockHeader {
         length += self.timestamp.length(); // Block timestamp.
         length += self.extra_data.length(); // Additional arbitrary data.
         length += self.mix_hash.length(); // Hash used for mining.
-        length += B64::new(self.nonce.to_be_bytes()).length(); // Nonce for mining.
+        length += self.nonce.length();
 
         if let Some(base_fee) = self.base_fee_per_gas {
             // Adding base fee length if it exists.
@@ -190,7 +193,7 @@ impl Encodable for BlockHeader {
       self.timestamp.encode(out); // Encode timestamp.
       self.extra_data.encode(out); // Encode extra data.
       self.mix_hash.encode(out); // Encode mix hash.
-      B64::new(self.nonce.to_be_bytes()).encode(out); // Encode nonce.
+      self.nonce.encode(out); // Encode nonce.
 
       // Encode base fee.
       if let Some(ref base_fee) = self.base_fee_per_gas {
