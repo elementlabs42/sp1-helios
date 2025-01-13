@@ -164,9 +164,6 @@ impl SP1LightClientOperator {
             return Ok(None);
         }
 
-
-        println!("174");
-
         // TODO: Hardcoded values for now
         let target_block: u64 = 10663776; // TODO move to argument
         // let target_block: u64 = latest_block;
@@ -211,7 +208,7 @@ impl SP1LightClientOperator {
         }
 
         if receipts.is_some() {
-            let computed_receipts_root = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(&r).encode_inner(buf, false));
+            let computed_receipts_root = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(r).encode_inner(buf, false));
             println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
         } else {
             println!("No receipts found: {:?}", receipts);
@@ -232,7 +229,6 @@ impl SP1LightClientOperator {
             let block_header = BlockHeader::from(&header);
             let computed_block_hash = block_header.hash_slow();
             println!("Block hash {:?}, computed: {:?}", header.hash, computed_block_hash);
-
         } else {
             println!("No block found: {:?}", block);
         }
