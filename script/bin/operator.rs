@@ -1,10 +1,11 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
-    eips::{BlockId, BlockNumberOrTag}, network::{Ethereum, EthereumWallet}, primitives::{Address, B256, U256}, providers::{
+    dyn_abi::abi, eips::{BlockId, BlockNumberOrTag}, hex, json_abi::{Event, EventParam}, network::{Ethereum, EthereumWallet}, primitives::{keccak256, Address, Log, B256, U256}, providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Identity, Provider, ProviderBuilder, RootProvider,
-    }, rpc::types::{Block, BlockTransactionsKind, TransactionReceipt}, signers::local::PrivateKeySigner, sol, transports::http::{Client, Http}
+    }, rpc::types::{Block, BlockTransactionsKind, TransactionReceipt}, signers::local::PrivateKeySigner, sol, sol_types::{EventTopic, SolValue}, transports::http::{Client, Http}
 };
+use alloy_primitives::Bytes;
 use anyhow::Result;
 use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
 use helios_ethereum::consensus::Inner;
@@ -231,6 +232,30 @@ impl SP1LightClientOperator {
             println!("Block hash {:?}, computed: {:?}", header.hash, computed_block_hash);
         } else {
             println!("No block found: {:?}", block);
+        }
+
+
+        if (true) {
+            let contract: Address = "0xdac17f958d2ee523a2206206994597c13d831ec7".parse().unwrap();
+            let signature = "Transfer(address,address,uint256)";
+            let topics_0 = keccak256(signature);
+
+            let from: Address = "0xfb9dd8788bb1af2838b7de4492c47a94dec551ae".parse().unwrap();
+            let topics_1 = from.into_word();
+            
+            let to: Address = "0xf02f51ec96a8e001674a762c4802a700a933938e".parse().unwrap();
+            let topics_2 = to.into_word();
+
+            let value = U256::from(5000000).abi_encode();
+            let data = Bytes::from(value);
+
+            let topics: Vec<B256> = vec![topics_0, topics_1, topics_2];
+            let log = Log::new(contract, topics, data);
+
+            // LogData { topics: [0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef, 0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae, 0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e], data: 0x00000000000000000000000000000000000000000000000000000000004c4b40 } }]
+            println!("Log: {:?}", log);
+
+            
         }
 
 
