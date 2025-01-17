@@ -12,6 +12,7 @@ use helios_ethereum::consensus::Inner;
 use helios_ethereum::rpc::http_rpc::HttpRpc;
 use helios_ethereum::rpc::ConsensusRpc;
 use log::{error, info};
+use nybbles::Nibbles;
 use sp1_helios_primitives::types::ProofInputs;
 use sp1_helios_script::{*, block_header::*, receipt::*, trie::*};
 use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
@@ -209,8 +210,18 @@ impl SP1LightClientOperator {
         }
 
         if receipts.is_some() {
-            let computed_receipts_root = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(r).encode_inner(buf, false));
+
+            let json_str = r#"{"transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f","blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","blockNumber":"0x1475235","logsBloom":"0x00000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000010000000000000100000000000000000000000000000000000000000008800000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000080000000000000000000000000000000000000000000000002000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000","gasUsed":"0xb405","contractAddress":null,"cumulativeGasUsed":"0x6619be","transactionIndex":"0x50","from":"0xfb9dd8788bb1af2838b7de4492c47a94dec551ae","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","type":"0x2","effectiveGasPrice":"0x1ed71dcbe","logs":[{"blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","address":"0xdac17f958d2ee523a2206206994597c13d831ec7","logIndex":"0x57","data":"0x00000000000000000000000000000000000000000000000000000000004c4b40","removed":false,"topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae","0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e"],"blockNumber":"0x1475235","transactionIndex":"0x50","transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f"}],"status":"0x1"}"#;
+
+            let receipt: TransactionReceipt = serde_json::from_str(json_str).unwrap();
+            println!("Deserialized receipt: {:?}", receipt);
+
+            let mut buf = Vec::<u8>::new();
+            ReceiptWithBloomEncoder::new(&receipt).encode_inner(&mut buf, false);
+            let nibbles = Nibbles::unpack(buf);
+            let (computed_receipts_root, proofs) = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(r).encode_inner(buf, false), Some(vec![nibbles]));
             println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
+            println!("Proofs {:?}", proofs);
         } else {
             println!("No receipts found: {:?}", receipts);
         }
@@ -254,11 +265,6 @@ impl SP1LightClientOperator {
 
             // LogData { topics: [0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef, 0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae, 0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e], data: 0x00000000000000000000000000000000000000000000000000000000004c4b40 } }]
             println!("Log: {:?}", log);
-
-            let json_str = r#"{"transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f","blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","blockNumber":"0x1475235","logsBloom":"0x00000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000010000000000000100000000000000000000000000000000000000000008800000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000080000000000000000000000000000000000000000000000002000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000","gasUsed":"0xb405","contractAddress":null,"cumulativeGasUsed":"0x6619be","transactionIndex":"0x50","from":"0xfb9dd8788bb1af2838b7de4492c47a94dec551ae","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","type":"0x2","effectiveGasPrice":"0x1ed71dcbe","logs":[{"blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","address":"0xdac17f958d2ee523a2206206994597c13d831ec7","logIndex":"0x57","data":"0x00000000000000000000000000000000000000000000000000000000004c4b40","removed":false,"topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae","0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e"],"blockNumber":"0x1475235","transactionIndex":"0x50","transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f"}],"status":"0x1"}"#;
-
-            let receipt: TransactionReceipt = serde_json::from_str(json_str).unwrap();
-            println!("Deserialized receipt: {:?}", receipt);
         }
 
 
