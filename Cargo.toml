@@ -47,6 +47,7 @@ serde_with = { version = "3.4.0", features = ["hex"] }
 cargo_metadata = "0.18"
 
 # receipt
+alloy-rlp = "0.3.4"
 alloy-trie = "0.4"
 nybbles = "0.2.1"
 

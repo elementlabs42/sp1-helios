@@ -37,6 +37,7 @@ cargo_metadata = { workspace = true }
 reqwest = { workspace = true }
 tree_hash = { workspace = true }
 serde_json = { workspace = true }
+alloy-rlp = { workspace = true }
 alloy-trie = { workspace = true }
 nybbles = { workspace = true }
 

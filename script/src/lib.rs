@@ -17,6 +17,7 @@ use tokio::sync::{mpsc::channel, watch};
 use tree_hash::TreeHash;
 
 pub mod block_header;
+pub mod proof;
 pub mod receipt;
 pub mod relay;
 pub mod trie;

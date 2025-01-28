@@ -2,8 +2,7 @@
 
 use std::collections::BTreeMap;
 use alloy::{
-  core::rlp::{Encodable, encode_fixed_size},
-  primitives::{B256, Bytes},
+  consensus::ReceiptEnvelope, core::rlp::{encode_fixed_size, Encodable}, primitives::{Bytes, B256}
 };
 use alloy_trie::{proof::ProofRetainer, HashBuilder};
 use nybbles::Nibbles;
@@ -46,6 +45,8 @@ where
 
       value_buffer.clear();
       encode(&items[index], &mut value_buffer);
+
+      // println!("RECEIPT LEAF: {:?} | {:?}, encoded val: {:?}\r\n", i, index, &value_buffer);
 
       hb.add_leaf(Nibbles::unpack(&index_buffer), &value_buffer);
   }
