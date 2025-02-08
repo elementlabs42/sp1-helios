@@ -7,7 +7,7 @@ use alloy::{
 };
 use alloy_rlp::{encode_fixed_size, Encodable, Rlp};
 use alloy_primitives::{Bytes, FixedBytes};
-use alloy_trie::{proof::ProofRetainer, HashBuilder};
+use alloy_trie::{nodes::word_rlp, proof::ProofRetainer, HashBuilder};
 use anyhow::Result;
 use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
 use helios_ethereum::consensus::Inner;
@@ -16,7 +16,7 @@ use helios_ethereum::rpc::ConsensusRpc;
 use log::{error, info};
 use nybbles::Nibbles;
 use sp1_helios_primitives::types::ProofInputs;
-use sp1_helios_script::{*, block_header::*, proof::*, receipt::*, trie::*};
+use sp1_helios_script::{block_header::*, proof::*, receipt::*, rlp_node::RlpNode, trie::*, *};
 use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
 use ssz_rs::prelude::*;
 use std::env;
@@ -271,12 +271,12 @@ impl SP1LightClientOperator {
 
             {
                 // let nibbles = Nibbles::unpack(&index_buffer);
-                let _k = [0x01];
-                let k = Nibbles::from_nibbles(_k);
+                let _k = [0x03];
+                let k = Nibbles::unpack(_k);
                 let mut builder = HashBuilder::default().with_proof_retainer(ProofRetainer::from_iter([Nibbles::unpack(_k)]));
-                builder.add_leaf(Nibbles::from_nibbles([0x01]), [0x11]);
-                // builder.add_leaf(Nibbles::from_nibbles([0x02]), &[0x12]);
-                // builder.add_leaf(Nibbles::from_nibbles([0x03]), &[0x13]);
+                builder.add_leaf(Nibbles::unpack([0x01]), &[0x11]);
+                builder.add_leaf(Nibbles::unpack([0x02]), &[0x12]);
+                builder.add_leaf(Nibbles::unpack([0x03]), &[0x13]);
                 let r = builder.root();
                 let p = builder.take_proofs();
                 let mut r_buf = Vec::<u8>::new();
@@ -284,16 +284,40 @@ impl SP1LightClientOperator {
                 // let r_hex = B256::from_slice(&r_buf);
                 println!("\r\n\r\n >>> Root: {:?}, Encoded Root: {:?}, Proofs: {:?} \r\n\r\n", r, r_buf, p);
                 println!("[0x11]: {:?}", keccak256([0x11]));
+                println!("[0x12]: {:?}", keccak256([0x12]));
+                println!("[0x13]: {:?}", keccak256([0x13]));
 
                 let bytes = vec![0xc2, 0x31, 0x11];
                 println!("0xc23111: {:?}", keccak256(&bytes));
 
                 let bytes = vec![0xc2, 0x20, 0x11];
                 println!("0xc22011: {:?}", keccak256(&bytes));
-                
-                // println!("[0x12]: {:?}", keccak256([0x12]));
-                // println!("[0x13]: {:?}", keccak256([0x13]));
-                let result = verify_proof(r, k, Some(vec![0x11]), p.values());
+
+                let bytes = vec![0xc2, 0x20, 0x13];
+                println!("0xc22013: {:?}", keccak256(&bytes));
+
+                for val in p.values() {
+                    let hex_str: String = RlpNode::from_rlp(val).as_slice().iter().map(|b| format!("{:02x}", b)).collect();
+                    println!("P {:?} => {:?}", val, hex_str);
+                }
+
+                let word_rlp_r = word_rlp(&r);
+
+                let mut proof: Vec<&Bytes> = p.values().collect();
+                let word_root_bytes = Bytes::from(word_rlp(&r));
+                proof.insert(0, &word_root_bytes);
+
+                // let r_bytes = Bytes::from(r);
+                // proof.insert(0, &r_bytes);
+
+                // let root_rlp = builder.stack.last().cloned().unwrap();
+                // let hex_root_rlp: String = root_rlp.as_slice().iter().map(|b| format!("{:02x}", b)).collect();
+                // let keccak_root_rlp = keccak256(root_rlp);
+                // let hex_keccak_root_rlp: String = keccak_root_rlp.as_slice().iter().map(|b| format!("{:02x}", b)).collect();
+                // println!(">>> Root RLP: {:?}", hex_root_rlp);
+                // println!(">>> keccak Root RLP: {:?}", hex_keccak_root_rlp);
+
+                let result = verify_proof(r, k, Some(vec![0x13]), proof);
                 println!("Result {:?}", result);
 
                 // 1 leaf
@@ -302,6 +326,8 @@ impl SP1LightClientOperator {
                 // [0x11]: 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158
                 // [0x12]: 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
                 // [0x13]: 0x62af204a12d42fdc0d1452abd76e3d611b00a98ccdab368ef149b27224b2f281
+
+                // 0xc23111: 0x8b4da6959c34e55ee3400d7a0255e58a2cdf056bc6a97d2d923f7d56a1cf32cf
 
                 // Result Err(ValueMismatch { path: Nibbles(""), got: Some(0xc23111), expected: Some(0xa08b4da6959c34e55ee3400d7a0255e58a2cdf056bc6a97d2d923f7d56a1cf32cf) })
                 
@@ -313,6 +339,9 @@ impl SP1LightClientOperator {
                 // [0x11]: 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158
                 // [0x12]: 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
                 // [0x13]: 0x62af204a12d42fdc0d1452abd76e3d611b00a98ccdab368ef149b27224b2f281
+
+                // 0xc22011: 0x60add687e56837ee32127b90596735d80faca9d7eb07d600df276c2c65ae8d0d
+
                 // Result Err(ValueMismatch { path: Nibbles(""), got: Some(0xd780c22011c22012c2201380808080808080808080808080), expected: Some(0xa057e7abe9ef3609147fbfa6521e93deb3d20067427c692024bd378c9a33a2feaf) })
 
 
@@ -326,6 +355,9 @@ impl SP1LightClientOperator {
                 // [0x11]: 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158
                 // [0x12]: 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
                 // [0x13]: 0x62af204a12d42fdc0d1452abd76e3d611b00a98ccdab368ef149b27224b2f281
+
+                // 0xc22011: 0x60add687e56837ee32127b90596735d80faca9d7eb07d600df276c2c65ae8d0d
+
                 // Result Err(ValueMismatch { path: Nibbles(""), got: Some(0xd580c22011c220128080808080808080808080808080), expected: Some(0xa0e48f41f7906cdab553c3cd03e478ea30bccd83c80fd42648388de43899ec5bcb) })
             }
 

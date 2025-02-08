@@ -17,9 +17,13 @@ use tokio::sync::{mpsc::channel, watch};
 use tree_hash::TreeHash;
 
 pub mod block_header;
+pub mod branch_node;
+pub mod extension_node;
 pub mod proof;
 pub mod receipt;
 pub mod relay;
+pub mod rlp_node;
+pub mod trie_node;
 pub mod trie;
 
 pub const MAX_REQUEST_LIGHT_CLIENT_UPDATES: u8 = 128;

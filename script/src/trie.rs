@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use alloy::{
-  consensus::ReceiptEnvelope, core::rlp::{encode_fixed_size, Encodable}, primitives::{Bytes, B256}
+  core::rlp::{encode_fixed_size, Encodable}, primitives::{Bytes, B256}
 };
 use alloy_trie::{proof::ProofRetainer, HashBuilder};
 use nybbles::Nibbles;
