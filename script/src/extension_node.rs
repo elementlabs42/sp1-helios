@@ -2,8 +2,8 @@
 
 use alloy_primitives::{hex, Bytes};
 use alloy_rlp::{length_of_length, BufMut, Decodable, Encodable, Header};
-use nybbles::Nibbles;
 use core::fmt;
+use nybbles::Nibbles;
 
 use crate::{rlp_node::RlpNode, trie_node::unpack_path_to_nibbles};
 
@@ -80,7 +80,10 @@ impl ExtensionNode {
 
     /// Return extension node as [ExtensionNodeRef].
     pub fn as_ref(&self) -> ExtensionNodeRef<'_> {
-        ExtensionNodeRef { key: &self.key, child: &self.child }
+        ExtensionNodeRef {
+            key: &self.key,
+            child: &self.child,
+        }
     }
 }
 
@@ -104,9 +107,12 @@ impl fmt::Debug for ExtensionNodeRef<'_> {
 impl Encodable for ExtensionNodeRef<'_> {
     #[inline]
     fn encode(&self, out: &mut dyn BufMut) {
-        Header { list: true, payload_length: self.rlp_payload_length() }.encode(out);
-        self.key.encode_path_leaf(false).as_slice().encode(out);
-        // Pointer to the child is already RLP encoded.
+        Header {
+            list: true,
+            payload_length: self.rlp_payload_length(),
+        }
+        .encode(out);
+        self.key.pack().encode(out);
         out.put_slice(self.child);
     }
 

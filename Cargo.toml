@@ -16,44 +16,50 @@ sp1-helios-program = { path = "program" }
 sp1-helios-primitives = { path = "primitives" }
 
 # helios
-helios = { git = "https://github.com/a16z/helios", version = "0.7.0" }
-helios-consensus-core = { git = "https://github.com/a16z/helios", version = "0.7.0" }
-helios-ethereum = { git = "https://github.com/a16z/helios", version = "0.7.0" }
+helios = { git = "https://github.com/a16z/helios", version = "0.8.2" }
+helios-consensus-core = { git = "https://github.com/a16z/helios", version = "0.8.1" }
+helios-ethereum = { git = "https://github.com/a16z/helios", version = "0.8.1" }
 
 # general
 dotenv = "0.15.0"
 eyre = "0.6.12"
-sp1-sdk = "3.0.0"
-sp1-build = "3.0.0"
+sp1-sdk = "4.1.1"
+sp1-build = "4.1.1"
 tokio = "1.38.0"
 tracing = "0.1.37"
 serde = "1.0.203"
 ssz-rs = { package = "ssz_rs", version = "0.9.0" }
-thiserror = "1.0.61"
+thiserror = "2.0.11"
 zduny-wasm-timer = "0.2.8"
 serde_cbor = "0.11.2"
 hex = "0.4.3"
 serde_json = "1.0.125"
-alloy-sol-types = "0.7.7"
+alloy-sol-types = "0.8.20"
 clap = "4.5.9"
 log = "0.4.22"
 env_logger = "0.11.3"
-alloy-primitives = "0.7.7"
-alloy = { version = "0.1.1", features = ["full"] }
+alloy-primitives = "0.8.20"
+alloy = { version = "0.11.1", features = ["providers", "transports", "network"] }
 anyhow = "1.0.86"
 reqwest = "0.12.5"
-tree_hash = "0.7.0"
+tree_hash = "0.9.1"
 serde_with = { version = "3.4.0", features = ["hex"] }
-cargo_metadata = "0.18"
+cargo_metadata = "0.19.1"
 
 # receipt
 alloy-rlp = "0.3.4"
-alloy-trie = "0.4"
+alloy-trie = "0.7.8"
 arrayvec = { version = "0.7", default-features = false }
-nybbles = "0.2.1"
+nybbles = "0.3.3"
 smallvec = { version = "1.0", default-features = false, features = [
     "const_new",
 ] }
+url = "2.4.0"
+# Pin base64ct to a specific version
+base64ct = "1.5.3"
+
+# Add this
+alloy-sol-macro = "0.8"
 
 [patch.crates-io]
 sha2-v0-9-9 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", branch = "patch-sha2-v0.9.9" }

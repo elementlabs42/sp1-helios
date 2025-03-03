@@ -1,12 +1,26 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
-    dyn_abi::abi, eips::{BlockId, BlockNumberOrTag}, hex::{self, FromHex, ToHex, ToHexExt}, json_abi::{Event, EventParam}, network::{Ethereum, EthereumWallet}, primitives::{keccak256, Address, Log, B256, U256}, providers::{
-        fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
+    dyn_abi::abi,
+    eips::{BlockId, BlockNumberOrTag},
+    hex::{self, FromHex, ToHex, ToHexExt},
+    json_abi::{Event, EventParam},
+    network::{Ethereum, EthereumWallet},
+    primitives::{keccak256, Address, Log, B256, U256},
+    providers::{
+        fillers::{
+            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+            WalletFiller,
+        },
         Identity, Provider, ProviderBuilder, RootProvider,
-    }, rpc::types::{Block, BlockTransactionsKind, TransactionReceipt}, signers::local::PrivateKeySigner, sol, sol_types::{EventTopic, SolValue}, transports::http::{Client, Http},
+    },
+    rpc::types::{Block, BlockTransactionsKind, TransactionReceipt},
+    signers::local::PrivateKeySigner,
+    sol,
+    sol_types::{EventTopic, SolValue},
+    transports::http::{Client, Http},
 };
-use alloy_rlp::{encode_fixed_size, Encodable, Rlp};
 use alloy_primitives::{Bytes, FixedBytes};
+use alloy_rlp::{encode_fixed_size, Encodable, Rlp};
 use alloy_trie::{nodes::word_rlp, proof::ProofRetainer, HashBuilder};
 use anyhow::Result;
 use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
@@ -17,7 +31,7 @@ use log::{error, info};
 use nybbles::Nibbles;
 use sp1_helios_primitives::types::ProofInputs;
 use sp1_helios_script::{block_header::*, proof::*, receipt::*, rlp_node::RlpNode, trie::*, *};
-use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
+use sp1_sdk::{EnvProver, ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
 use ssz_rs::prelude::*;
 use std::env;
 use std::sync::Arc;
@@ -30,16 +44,17 @@ const ELF: &[u8] = include_bytes!("../../elf/riscv32im-succinct-zkvm-elf");
 /// ProviderBuilder. Recommended method for passing around a ProviderBuilder.
 type EthereumFillProvider = FillProvider<
     JoinFill<
-        JoinFill<JoinFill<JoinFill<Identity, GasFiller>, NonceFiller>, ChainIdFiller>,
+        JoinFill<
+            Identity,
+            JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+        >,
         WalletFiller<EthereumWallet>,
     >,
-    RootProvider<Http<Client>>,
-    Http<Client>,
-    Ethereum,
+    RootProvider,
 >;
 
 struct SP1LightClientOperator {
-    client: ProverClient,
+    client: EnvProver,
     pk: SP1ProvingKey,
     wallet_filler: Arc<EthereumFillProvider>,
     contract_address: Address,
@@ -87,7 +102,7 @@ impl SP1LightClientOperator {
     pub async fn new() -> Self {
         dotenv::dotenv().ok();
 
-        let client = ProverClient::new();
+        let client = ProverClient::from_env();
         let (pk, _) = client.setup(ELF);
         let chain_id: u64 = env::var("DEST_CHAIN_ID")
             .expect("DEST_CHAIN_ID not set")
@@ -106,10 +121,7 @@ impl SP1LightClientOperator {
         let signer: PrivateKeySigner = private_key.parse().expect("Failed to parse private key");
         let relayer_address = signer.address();
         let wallet = EthereumWallet::from(signer);
-        let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
-            .wallet(wallet)
-            .on_http(rpc_url);
+        let provider = ProviderBuilder::new().wallet(wallet).on_http(rpc_url);
 
         Self {
             client,
@@ -161,7 +173,7 @@ impl SP1LightClientOperator {
         let finality_update = client.rpc.get_finality_update().await.unwrap();
 
         // Check if contract is up to date
-        let latest_block = finality_update.finalized_header.beacon().slot;
+        let latest_block = finality_update.finalized_header().beacon().slot;
 
         if latest_block <= head {
             info!("Contract is up to date. Nothing to update.");
@@ -170,7 +182,7 @@ impl SP1LightClientOperator {
 
         // TODO: Hardcoded values for now
         let target_block: u64 = 10663776; // TODO move to argument
-        // let target_block: u64 = latest_block;
+                                          // let target_block: u64 = latest_block;
 
         println!("Target consensus block: {:?}", target_block);
 
@@ -180,13 +192,18 @@ impl SP1LightClientOperator {
         //     return Ok(None);
         // }
 
-        let consensus_block: BeaconBlock<MainnetConsensusSpec> = client.rpc.get_block(target_block).await.unwrap();
+        let consensus_block: BeaconBlock<MainnetConsensusSpec> =
+            client.rpc.get_block(target_block).await.unwrap();
 
         let execution_payload = consensus_block.body.execution_payload();
 
         let block_number = BlockNumberOrTag::from(*execution_payload.block_number());
 
-        println!("Execution block: {:?} (hash: {:?})", block_number, execution_payload.block_hash());
+        println!(
+            "Execution block: {:?} (hash: {:?})",
+            block_number,
+            execution_payload.block_hash()
+        );
 
         let receipts_root = execution_payload.receipts_root();
 
@@ -197,12 +214,13 @@ impl SP1LightClientOperator {
             .parse()
             .unwrap();
 
-        let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
-            .on_http(rpc_url);
+        let provider = ProviderBuilder::new().on_http(rpc_url);
 
         let mut receipts: Option<Vec<TransactionReceipt>> = None;
-        match provider.get_block_receipts(block_number).await {
+        match provider
+            .get_block_receipts(BlockId::Number(block_number))
+            .await
+        {
             Ok(response) => {
                 receipts = response;
             }
@@ -212,7 +230,6 @@ impl SP1LightClientOperator {
         }
 
         if receipts.is_some() {
-
             let json_str = r#"{"transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f","blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","blockNumber":"0x1475235","logsBloom":"0x00000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000010000000000000100000000000000000000000000000000000000000008800000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000080000000000000000000000000000000000000000000000002000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000","gasUsed":"0xb405","contractAddress":null,"cumulativeGasUsed":"0x6619be","transactionIndex":"0x50","from":"0xfb9dd8788bb1af2838b7de4492c47a94dec551ae","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","type":"0x2","effectiveGasPrice":"0x1ed71dcbe","logs":[{"blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","address":"0xdac17f958d2ee523a2206206994597c13d831ec7","logIndex":"0x57","data":"0x00000000000000000000000000000000000000000000000000000000004c4b40","removed":false,"topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae","0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e"],"blockNumber":"0x1475235","transactionIndex":"0x50","transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f"}],"status":"0x1"}"#;
 
             let receipt: TransactionReceipt = serde_json::from_str(json_str).unwrap();
@@ -221,20 +238,22 @@ impl SP1LightClientOperator {
             let mut buf = Vec::<u8>::new();
             ReceiptWithBloomEncoder::new(&receipt).encode_inner(&mut buf, false);
             // let nibbles = Nibbles::unpack(buf);
-            println!("Encoded receipt: {:?} | hashed: {:?}\r\n", &buf, keccak256(&buf));
+            println!(
+                "Encoded receipt: {:?} | hashed: {:?}\r\n",
+                &buf,
+                keccak256(&buf)
+            );
 
-            let i:usize = 79;
+            let i: usize = 79;
             let index = adjust_index_for_rlp(i, receipts.as_ref().unwrap().len()); // 80
             let index_buffer = encode_fixed_size(&index);
             let nibbles = Nibbles::unpack(&index_buffer);
 
             // 83
-            // Proofs Some({Nibbles("05"): 0xf90211a01e0832d94dfd559d45c17ca1e7452d6d1089915eaec21252ce0ada6c95d1fdd8a0e5fcabc5a3ed7eb58d30eb20db11e95602ad9fa419e34050f54ea1a0025f0800a09f08f5a975d355f3b10a4579afcf8cbbd3644375e02d920517d5aa61fad7f804a046b5e51f63f1aecf8f30fad5ddfea6b5d2e935e934ea733d8dc1820d97727074a0548e55223e4c86172055787f5b49ba040a7fa61c2f5643a1a0ba43bc536517dfa0a3c23898e6674246725c21996716263d7d8644938e241e826a9209402f70c180a0137e7b70aa6f16c414633a81ad08fb74810d51e659cfff8170af6a2b0976ce3fa08b4e8ae8d4fc2acb5e5bae07641f2fcc4a6543edfd1d4444c4c54614ef6f5797a0a0954ecec817a729e030fea627d49d06fd3fdc107dca760fadb06b2f6ac90187a0c8748191a5d8c4611ad5d0e62b5a12736960b44ae02d2d7ab26aa5ede593b2e4a041993bd8fea403c401042d0371705b2846cafeb3b1623690c0fd8c2cfb4149e2a0c350b6755dd46f651bdf974742ecac51c0009471650ab23d794a858e8ea59296a01e98ec2bb215dbc61e82dc86003f2965347fd5c5a05f2582a54a0a47a6af8c04a0c9cb6ab7ab64062f1099ea4a8e71f483c24996bc92936d8cffa415492a8e8af2a02518a98188d0e1411c97b046749ef59ec9d71d31d3a88d309fac2609fc97a569a01176907a761419e00f64fef70fdf4041a808b6a5b36c999d002efdff0b6017ec80, Nibbles("0504"): 0xf9011120b9010d02f9010901836a5323b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0})
-
+            // Proofs Some({Nibbles("05"): 0xf90211a01e0832d94dfd559d45c17ca1e7452d6d1089915eaec21252ce0ada6c95d1fdd8a0e5fcabc5a3ed7eb58d30eb20db11e95602ad9fa419e34050f54ea1a0025f0800a09f08f5a975d355f3b10a4579afcf8cbbd3644375e02d920517d5aa61fad7f804a046b5e51f63f1aecf8f30fad5ddfea6b5d2e935e934ea733d8dc1820d97727074a0548e55223e4c86172055787f5b49ba040a7fa61c2f5643a1a0ba43bc536517dfa0a3c23898e6674246725c21996716263d7d8644938e241e826a9209402f70c180a0137e7b70aa6f16c414633a81ad08fb74810d51e659cfff8170af6a2b0976ce3fa08b4e8ae8d4fc2acb5e5bae07641f2fcc4a6543edfd1d4444c4c54614ef6f5797a0a0954ecec817a729e030fea627d49d06fd3fdc107dca760fadb06b2f6ac90187a0c8748191a5d8c4611ad5d0e62b5a12736960b44ae02d2d7ab26aa5ede593b2e4a041993bd8fea403c401042d0371705b2846cafeb3b1623690c0fd8c2cfb4149e2a0c350b6755dd46f651bdf974742ecac51c0009471650ab23d794a858e8ea59296a01e98ec2bb215dbc61e82dc86003f2965347fd5c5a05f2582a54a0a47a6af8c04a0c9cb6ab7ab64062f1099ea4a8e71f483c24996bc92936d8cffa415492a8e8af2a02518a98188d0e1411c97b046749ef59ec9d71d31d3a88d309fac2609fc97a569a01176907a761419e00f64fef70fdf4041a808b6a5b36c999d002efdff0b6017ec80, Nibbles("0504"): 0xf9011120b9010d02f9010901836a5323b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0})
 
             // 82
             // Proofs Some({Nibbles("05"): 0xf90211a01e0832d94dfd559d45c17ca1e7452d6d1089915eaec21252ce0ada6c95d1fdd8a0e5fcabc5a3ed7eb58d30eb20db11e95602ad9fa419e34050f54ea1a0025f0800a09f08f5a975d355f3b10a4579afcf8cbbd3644375e02d920517d5aa61fad7f804a046b5e51f63f1aecf8f30fad5ddfea6b5d2e935e934ea733d8dc1820d97727074a0548e55223e4c86172055787f5b49ba040a7fa61c2f5643a1a0ba43bc536517dfa0a3c23898e6674246725c21996716263d7d8644938e241e826a9209402f70c180a0137e7b70aa6f16c414633a81ad08fb74810d51e659cfff8170af6a2b0976ce3fa08b4e8ae8d4fc2acb5e5bae07641f2fcc4a6543edfd1d4444c4c54614ef6f5797a0a0954ecec817a729e030fea627d49d06fd3fdc107dca760fadb06b2f6ac90187a0c8748191a5d8c4611ad5d0e62b5a12736960b44ae02d2d7ab26aa5ede593b2e4a041993bd8fea403c401042d0371705b2846cafeb3b1623690c0fd8c2cfb4149e2a0c350b6755dd46f651bdf974742ecac51c0009471650ab23d794a858e8ea59296a01e98ec2bb215dbc61e82dc86003f2965347fd5c5a05f2582a54a0a47a6af8c04a0c9cb6ab7ab64062f1099ea4a8e71f483c24996bc92936d8cffa415492a8e8af2a02518a98188d0e1411c97b046749ef59ec9d71d31d3a88d309fac2609fc97a569a01176907a761419e00f64fef70fdf4041a808b6a5b36c999d002efdff0b6017ec80, Nibbles("0503"): 0xf9096120b9095d02f9095901836a011bb901000002000200000000000000000000000000000000000000800000000000000000000000008000000000010000000000000a00100008000000000100004000008000000000000000000020010000010000000000000000000010000000800000000401000082400000000000000000080000010002020000400000000000001000000000080000004800000000000000000000020100000000000000102000000000000000000000000000000008000000000000000000000000000000200000000000100000000000000000000000000000000000000000000001000000102000002020000000000000a000800000000000000020000000400000000004000001f9084ef8bc94bd6c7b0d2f68c2b7805d88388319cfb6ecb50ea9f863a028a87b6059180e46de5fb9ab35eb043e8fe00ab45afcc7789e3934ecbbcde3eaa00000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000001bcc58d165e5374d7b492b21c0a572fd61c0c2a0b8400000000000000000000000000000000000000000000000000002689428c1b72c00000000000000000000000000000000000000000000000000002073965b09a3f90119941231deb6f5749ef6ce6943a275a1d3e7486f4eaee1a07bfdfdb5e3a3776976e53cb0607060f54c5312701c8cba1155cc4d5394440b38b8e046e207259c2a9ca1639f4e15c25518e6f460019ce5b58632031edc36e8a50ff1000000000000000000000000bd6c7b0d2f68c2b7805d88388319cfb6ecb50ea900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000012a44804c45c8e20000000000000000000000000000000000000000000000000127bb788d290813000000000000000000000000000000000000000000000000000000006766c8d7f8bc94c02ffcdd914dba646704439c6090babad521d04cf884a003e28afce33ddcc0ab4ff4b9050c6ff0c323292f46b577db77c1a7281320de56a00000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000002105a0000000000000000000000000e6dcc63fffe1e3dbfcf1aa39209d4cc9234b07cfa000000000000000000000000000000000000000000000000000005a18843c6ae9f90119941231deb6f5749ef6ce6943a275a1d3e7486f4eaee1a07bfdfdb5e3a3776976e53cb0607060f54c5312701c8cba1155cc4d5394440b38b8e046e207259c2a9ca1639f4e15c25518e6f460019ce5b58632031edc36e8a50ff1000000000000000000000000c02ffcdd914dba646704439c6090babad521d04c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000127bb788d2908130000000000000000000000000000000000000000000000000127616008ec9d2a000000000000000000000000000000000000000000000000000000006766c8d7f87a94c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2f842a0e1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109ca00000000000000000000000005c7bcd6e7de5423a257d81b442095a1a6ced35c5a00000000000000000000000000000000000000000000000000127616008ec9d2af901fe945c7bcd6e7de5423a257d81b442095a1a6ced35c5f884a0a123dc29aebf7d0c3322c8eeb5b999e859f39937950ed31056532713d0de396fa00000000000000000000000000000000000000000000000000000000000002105a000000000000000000000000000000000000000000000000000000000001d2af3a0000000000000000000000000e6dcc63fffe1e3dbfcf1aa39209d4cc9234b07cfb90160000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000042000000000000000000000000000000000000060000000000000000000000000000000000000000000000000127616008ec9d2a000000000000000000000000000000000000000000000000012753e643eb4b1b000000000000000000000000000000000000000000000000000000006766c80b000000000000000000000000000000000000000000000000000000006766ebdc0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e6dcc63fffe1e3dbfcf1aa39209d4cc9234b07cf000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000000f9021a941231deb6f5749ef6ce6943a275a1d3e7486f4eaee1a0cba69f43792f9f399347222505213b55af8e0b0b54b893085c2e27ecbe1644f1b901e0000000000000000000000000000000000000000000000000000000000000002046e207259c2a9ca1639f4e15c25518e6f460019ce5b58632031edc36e8a50ff10000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000018000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e6dcc63fffe1e3dbfcf1aa39209d4cc9234b07cf0000000000000000000000000000000000000000000000000127616008ec9d2a00000000000000000000000000000000000000000000000000000000000021050000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000066163726f7373000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000077068616e746f6d00000000000000000000000000000000000000000000000000})
-
 
             // 81
             // Proofs Some({Nibbles("05"): 0xf90211a01e0832d94dfd559d45c17ca1e7452d6d1089915eaec21252ce0ada6c95d1fdd8a0e5fcabc5a3ed7eb58d30eb20db11e95602ad9fa419e34050f54ea1a0025f0800a09f08f5a975d355f3b10a4579afcf8cbbd3644375e02d920517d5aa61fad7f804a046b5e51f63f1aecf8f30fad5ddfea6b5d2e935e934ea733d8dc1820d97727074a0548e55223e4c86172055787f5b49ba040a7fa61c2f5643a1a0ba43bc536517dfa0a3c23898e6674246725c21996716263d7d8644938e241e826a9209402f70c180a0137e7b70aa6f16c414633a81ad08fb74810d51e659cfff8170af6a2b0976ce3fa08b4e8ae8d4fc2acb5e5bae07641f2fcc4a6543edfd1d4444c4c54614ef6f5797a0a0954ecec817a729e030fea627d49d06fd3fdc107dca760fadb06b2f6ac90187a0c8748191a5d8c4611ad5d0e62b5a12736960b44ae02d2d7ab26aa5ede593b2e4a041993bd8fea403c401042d0371705b2846cafeb3b1623690c0fd8c2cfb4149e2a0c350b6755dd46f651bdf974742ecac51c0009471650ab23d794a858e8ea59296a01e98ec2bb215dbc61e82dc86003f2965347fd5c5a05f2582a54a0a47a6af8c04a0c9cb6ab7ab64062f1099ea4a8e71f483c24996bc92936d8cffa415492a8e8af2a02518a98188d0e1411c97b046749ef59ec9d71d31d3a88d309fac2609fc97a569a01176907a761419e00f64fef70fdf4041a808b6a5b36c999d002efdff0b6017ec80, Nibbles("0502"): 0xf9011120b9010d02f9010901836762bbb9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0})
@@ -260,29 +279,44 @@ impl SP1LightClientOperator {
             // 74
             // Proofs Some({Nibbles("04"): 0xf90211a0e580f130e6e1603aa8092fec1bf145cef5f7c28cdf4f8afb301e2ee8bf51674da0e1bd673d350e754ed6fbd0373e610d9486f662201f5833faf3245870e2ae25bba092dea5356bca24522ff5236daffbf329159462982ba684bab583352554c4c82aa0d2a6c252106d0f5d1510e1c17d6ec7e75c1a71a879200a40cb7628a6bfe67897a0ac294d6dd807a4c76744de97439d00d8e2c5f0ff097c38e38d041720e0c7e541a00cd300a052e986289fd768408657ac0abe5ab32f7a7d9b917ff200e20f2d39b6a00f2682bfe2befe7fd8e0c6c8c68ff88224f8accc3de45dc9f0aba1a58e6d16cda0d2067579021fe87a0d81c7ba31f1a2fee4016bf3d7ab304cb6df4e55920f65a9a0489ad6fda0b29bee0b5b079fbfdcf58cd5be3aa0f109a888ee5b6410fff93ac5a0e7e6f78b28c621518b71d39d0c9919f1b7f03a38bcb5d2c9ec1a6b2c12121ff3a0a6b7ff798fe94e0d52979e247258307ca2c954055d42ab9a57b2049ab7197150a007f4194a0d9d8b219bef6ce4e2d597ffb8a107953b0cebd8dd2cf44da08597aea0a64e0b09d8276fe25a94d5fecb12b0e5961823bbbdf0ed5f6bbfefd6649e1a25a0b1901f04cc780873e59005afed9f546630facf12826983ff5a2336d51b92c1c9a057589da028a24482a757a81e27a1afcce03d04e849ede9cdd187776d1b99095da00a407a328b0be5424434e9e6c82b1f8a7c74257e736446ab24e743fae7d7d08a80, Nibbles("040b"): 0xf9024820b9024402f90240018361d35fb9010000000000810000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000008000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000008000000000000000000000000000000000f90135f85894f5c9f957705bea56a7e806943f98f7777b995826e1a09866f8ddfe70bb512b2f2b28b49d4017c43f7ba775f1a20c61c13eea8cdac111a0a349e3c0549d7f9aa7cb356a91a887ceae08bd3af7d7eaee4602eab3cc1f5467f8d994f5c9f957705bea56a7e806943f98f7777b995826e1a054fe7a67f8957a96919a0d1b81eeb25ea8c06f96ad528671da17a4a840040664b8a0000000000000000000000000000000000000000000000000000000000000456c00000000000000000000000000000000000000000000000000000000000045e404bee231d4887d5da2383985ee1d254ed70933754687bff3dc747fa2d1ab32630075364111a7a336756626d19fc8ec8df6328a5e63681c68ffaa312f6bf98c5c022d4b708b4be35f92684e475e91a03afaa5a3e938c7e6b2c442561f98ac160b})
 
-            let (computed_receipts_root, proofs) = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(r).encode_inner(buf, false), Some(vec![nibbles]));
-            println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
+            let (computed_receipts_root, proofs) = ordered_trie_root_with_encoder(
+                receipts.unwrap().as_slice(),
+                |r, buf| ReceiptWithBloomEncoder::new(r).encode_inner(buf, false),
+                Some(vec![nibbles]),
+            );
+            println!(
+                "Receipts root {:?}, computed: {:?}",
+                receipts_root, computed_receipts_root
+            );
             println!("Proofs {:?}", &proofs);
 
             let key = Nibbles::unpack(&index_buffer);
-            let result = verify_proof(computed_receipts_root, key, Some(buf), proofs.unwrap().values());
+            let result = verify_proof(
+                computed_receipts_root,
+                key,
+                Some(buf),
+                proofs.unwrap().values(),
+            );
             println!("Result {:?}", result);
-
 
             {
                 // let nibbles = Nibbles::unpack(&index_buffer);
                 let _k = [0x03];
                 let k = Nibbles::unpack(_k);
-                let mut builder = HashBuilder::default().with_proof_retainer(ProofRetainer::from_iter([Nibbles::unpack(_k)]));
+                let mut builder = HashBuilder::default()
+                    .with_proof_retainer(ProofRetainer::from_iter([Nibbles::unpack(_k)]));
                 builder.add_leaf(Nibbles::unpack([0x01]), &[0x11]);
                 builder.add_leaf(Nibbles::unpack([0x02]), &[0x12]);
                 builder.add_leaf(Nibbles::unpack([0x03]), &[0x13]);
                 let r = builder.root();
-                let p = builder.take_proofs();
+                let p = builder.take_proof_nodes();
                 let mut r_buf = Vec::<u8>::new();
                 r.encode(&mut r_buf);
                 // let r_hex = B256::from_slice(&r_buf);
-                println!("\r\n\r\n >>> Root: {:?}, Encoded Root: {:?}, Proofs: {:?} \r\n\r\n", r, r_buf, p);
+                println!(
+                    "\r\n\r\n >>> Root: {:?}, Encoded Root: {:?}, Proofs: {:?} \r\n\r\n",
+                    r, r_buf, p
+                );
                 println!("[0x11]: {:?}", keccak256([0x11]));
                 println!("[0x12]: {:?}", keccak256([0x12]));
                 println!("[0x13]: {:?}", keccak256([0x13]));
@@ -297,18 +331,20 @@ impl SP1LightClientOperator {
                 println!("0xc22013: {:?}", keccak256(&bytes));
 
                 for val in p.values() {
-                    let hex_str: String = RlpNode::from_rlp(val).as_slice().iter().map(|b| format!("{:02x}", b)).collect();
+                    let hex_str: String = RlpNode::from_rlp(val)
+                        .as_slice()
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect();
                     println!("P {:?} => {:?}", val, hex_str);
                 }
 
-                let word_rlp_r = word_rlp(&r);
+                let word_rlp_bytes = RlpNode::word_rlp(&r);
+                let word_rlp_bytes_vec = word_rlp_bytes.to_vec();
+                let word_root_bytes = Bytes::from(word_rlp_bytes_vec);
 
                 let mut proof: Vec<&Bytes> = p.values().collect();
-                let word_root_bytes = Bytes::from(word_rlp(&r));
                 proof.insert(0, &word_root_bytes);
-
-                // let r_bytes = Bytes::from(r);
-                // proof.insert(0, &r_bytes);
 
                 // let root_rlp = builder.stack.last().cloned().unwrap();
                 // let hex_root_rlp: String = root_rlp.as_slice().iter().map(|b| format!("{:02x}", b)).collect();
@@ -321,7 +357,7 @@ impl SP1LightClientOperator {
                 println!("Result {:?}", result);
 
                 // 1 leaf
-                // >>> Root: 0x8b4da6959c34e55ee3400d7a0255e58a2cdf056bc6a97d2d923f7d56a1cf32cf, Proofs: {Nibbles(""): 0xc23111} 
+                // >>> Root: 0x8b4da6959c34e55ee3400d7a0255e58a2cdf056bc6a97d2d923f7d56a1cf32cf, Proofs: {Nibbles(""): 0xc23111}
 
                 // [0x11]: 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158
                 // [0x12]: 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
@@ -330,11 +366,9 @@ impl SP1LightClientOperator {
                 // 0xc23111: 0x8b4da6959c34e55ee3400d7a0255e58a2cdf056bc6a97d2d923f7d56a1cf32cf
 
                 // Result Err(ValueMismatch { path: Nibbles(""), got: Some(0xc23111), expected: Some(0xa08b4da6959c34e55ee3400d7a0255e58a2cdf056bc6a97d2d923f7d56a1cf32cf) })
-                
 
                 // 3 leaves
-                // >>> Root: 0x57e7abe9ef3609147fbfa6521e93deb3d20067427c692024bd378c9a33a2feaf, Proofs: {Nibbles(""): 0xd780c22011c22012c2201380808080808080808080808080, Nibbles("01"): 0xc22011} 
-
+                // >>> Root: 0x57e7abe9ef3609147fbfa6521e93deb3d20067427c692024bd378c9a33a2feaf, Proofs: {Nibbles(""): 0xd780c22011c22012c2201380808080808080808080808080, Nibbles("01"): 0xc22011}
 
                 // [0x11]: 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158
                 // [0x12]: 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
@@ -344,13 +378,11 @@ impl SP1LightClientOperator {
 
                 // Result Err(ValueMismatch { path: Nibbles(""), got: Some(0xd780c22011c22012c2201380808080808080808080808080), expected: Some(0xa057e7abe9ef3609147fbfa6521e93deb3d20067427c692024bd378c9a33a2feaf) })
 
-
                 // 2 leaves
-                // >>> Root: 0xe48f41f7906cdab553c3cd03e478ea30bccd83c80fd42648388de43899ec5bcb, Proofs: {Nibbles(""): 0xd580c22011c220128080808080808080808080808080, Nibbles("01"): 0xc22011} 
+                // >>> Root: 0xe48f41f7906cdab553c3cd03e478ea30bccd83c80fd42648388de43899ec5bcb, Proofs: {Nibbles(""): 0xd580c22011c220128080808080808080808080808080, Nibbles("01"): 0xc22011}
 
                 // Root
                 // 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158, 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
-
 
                 // [0x11]: 0x0552ab8dc52e1cf9328ddb97e0966b9c88de9cca97f48b0110d7800982596158
                 // [0x12]: 0x5fa2358263196dbbf23d1ca7a509451f7a2f64c15837bfbb81298b1e3e24e4fa
@@ -360,7 +392,6 @@ impl SP1LightClientOperator {
 
                 // Result Err(ValueMismatch { path: Nibbles(""), got: Some(0xd580c22011c220128080808080808080808080808080), expected: Some(0xa0e48f41f7906cdab553c3cd03e478ea30bccd83c80fd42648388de43899ec5bcb) })
             }
-
 
             // for encoded in proofs.unwrap().values() {
             //     let rlp = Rlp::new(encoded);
@@ -390,7 +421,10 @@ impl SP1LightClientOperator {
         }
 
         let mut block: Option<Block> = None;
-        match provider.get_block(BlockId::from(block_number), BlockTransactionsKind::Full).await {
+        match provider
+            .get_block(BlockId::from(block_number), BlockTransactionsKind::Full)
+            .await
+        {
             Ok(response) => {
                 block = response;
             }
@@ -403,21 +437,29 @@ impl SP1LightClientOperator {
             let header = block.unwrap().header;
             let block_header = BlockHeader::from(&header);
             let computed_block_hash = block_header.hash_slow();
-            println!("Block hash {:?}, computed: {:?}", header.hash, computed_block_hash);
+            println!(
+                "Block hash {:?}, computed: {:?}",
+                header.hash, computed_block_hash
+            );
         } else {
             println!("No block found: {:?}", block);
         }
 
-
         if (true) {
-            let contract: Address = "0xdac17f958d2ee523a2206206994597c13d831ec7".parse().unwrap();
+            let contract: Address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+                .parse()
+                .unwrap();
             let signature = "Transfer(address,address,uint256)";
             let topics_0 = keccak256(signature);
 
-            let from: Address = "0xfb9dd8788bb1af2838b7de4492c47a94dec551ae".parse().unwrap();
+            let from: Address = "0xfb9dd8788bb1af2838b7de4492c47a94dec551ae"
+                .parse()
+                .unwrap();
             let topics_1 = from.into_word();
-            
-            let to: Address = "0xf02f51ec96a8e001674a762c4802a700a933938e".parse().unwrap();
+
+            let to: Address = "0xf02f51ec96a8e001674a762c4802a700a933938e"
+                .parse()
+                .unwrap();
             let topics_2 = to.into_word();
 
             let value = U256::from(5000000).abi_encode();
@@ -430,9 +472,7 @@ impl SP1LightClientOperator {
             println!("Log: {:?}", log);
         }
 
-
         panic!("FINISHED: SKIP UPDATE"); // TODO
-
 
         // Optimization:
         // Skip processing update inside program if next_sync_committee is already stored in contract.
@@ -441,7 +481,7 @@ impl SP1LightClientOperator {
         if !sync_committee_updates.is_empty() {
             let next_sync_committee = B256::from_slice(
                 sync_committee_updates[0]
-                    .next_sync_committee
+                    .next_sync_committee()
                     .tree_hash_root()
                     .as_ref(),
             );
@@ -469,7 +509,7 @@ impl SP1LightClientOperator {
         stdin.write_slice(&encoded_proof_inputs);
 
         // Generate proof.
-        let proof = self.client.prove(&self.pk, stdin).groth16().run()?;
+        let proof = self.client.prove(&self.pk, &stdin).groth16().run()?;
 
         info!("Attempting to update to new head block: {:?}", latest_block);
         Ok(Some(proof))
@@ -500,7 +540,7 @@ impl SP1LightClientOperator {
         let receipt = contract
             .update(proof_as_bytes.into(), public_values_bytes.into())
             .gas_price(max_fee_per_gas)
-            .gas(gas_limit)
+            .gas(gas_limit as u64)
             .nonce(nonce)
             .send()
             .await?

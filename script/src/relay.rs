@@ -1,5 +1,8 @@
-use alloy::providers::{Provider, RootProvider};
-use alloy::transports::http::{Client, Http};
+use alloy::{
+    network::Ethereum,
+    providers::Provider,
+    transports::http::{Client, Http},
+};
 
 /// Get the gas limit associated with the chain id. Note: These values have been found through
 /// trial and error and can be configured.
@@ -13,7 +16,10 @@ pub fn get_gas_limit(chain_id: u64) -> u128 {
 
 /// Get the gas fee cap associated with the chain id, using the provider to get the gas price. Note:
 /// These values have been found through trial and error and can be configured.
-pub async fn get_fee_cap(chain_id: u64, provider: &RootProvider<Http<Client>>) -> u128 {
+pub async fn get_fee_cap<P>(chain_id: u64, provider: &P) -> u128
+where
+    P: Provider + Send + Sync,
+{
     // Base percentage multiplier for the gas fee.
     let mut multiplier = 20;
 

@@ -4,6 +4,7 @@ use helios_ethereum::rpc::ConsensusRpc;
 use sp1_helios_primitives::types::ProofInputs;
 use sp1_helios_script::{get_checkpoint, get_client, get_latest_checkpoint, get_updates};
 use sp1_sdk::{utils::setup_logger, ProverClient, SP1Stdin};
+use tokio;
 
 const ELF: &[u8] = include_bytes!("../../elf/riscv32im-succinct-zkvm-elf");
 #[derive(Parser, Debug, Clone)]
@@ -13,7 +14,7 @@ pub struct GenesisArgs {
     pub slot: Option<u64>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
     setup_logger();
@@ -46,7 +47,7 @@ async fn main() -> Result<()> {
     stdin.write_slice(&serde_cbor::to_vec(&inputs)?);
 
     let prover_client = ProverClient::new();
-    let (_, report) = prover_client.execute(ELF, stdin).run()?;
+    let (_, report) = prover_client.execute(ELF, &stdin).run()?;
     println!("Execution Report: {:?}", report);
 
     Ok(())
