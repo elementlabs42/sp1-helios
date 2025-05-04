@@ -1,24 +1,20 @@
 /// Continuously generate proofs & keep light client updated with chain
 use alloy::{
-    network::{Ethereum, EthereumWallet},
-    primitives::Address,
-    providers::{
+    dyn_abi::abi, eips::{BlockId, BlockNumberOrTag}, hex, json_abi::{Event, EventParam}, network::{Ethereum, EthereumWallet}, primitives::{keccak256, Address, Log, B256, U256}, providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Identity, Provider, ProviderBuilder, RootProvider,
-    },
-    signers::local::PrivateKeySigner,
-    sol,
-    transports::http::{Client, Http},
+    }, rpc::types::{Block, BlockTransactionsKind, TransactionReceipt}, signers::local::PrivateKeySigner, sol, sol_types::{EventTopic, SolValue}, transports::http::{Client, Http}
 };
-use alloy_primitives::{B256, U256};
+use alloy_primitives::Bytes;
 use anyhow::Result;
-use helios_consensus_core::consensus_spec::MainnetConsensusSpec;
+use helios_consensus_core::{consensus_spec::MainnetConsensusSpec, types::BeaconBlock};
 use helios_ethereum::consensus::Inner;
 use helios_ethereum::rpc::http_rpc::HttpRpc;
 use helios_ethereum::rpc::ConsensusRpc;
 use log::{error, info};
+use nybbles::Nibbles;
 use sp1_helios_primitives::types::ProofInputs;
-use sp1_helios_script::*;
+use sp1_helios_script::{*, block_header::*, receipt::*, trie::*};
 use sp1_sdk::{ProverClient, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin};
 use ssz_rs::prelude::*;
 use std::env;
@@ -127,6 +123,9 @@ impl SP1LightClientOperator {
     async fn request_update(
         &self,
         mut client: Inner<MainnetConsensusSpec, HttpRpc>,
+        // target_block: u64,
+        // contract_address,
+        // event
     ) -> Result<Option<SP1ProofWithPublicValues>> {
         // Fetch required values.
         let contract = SP1LightClient::new(self.contract_address, self.wallet_filler.clone());
@@ -161,10 +160,116 @@ impl SP1LightClientOperator {
 
         // Check if contract is up to date
         let latest_block = finality_update.finalized_header.beacon().slot;
+
         if latest_block <= head {
             info!("Contract is up to date. Nothing to update.");
             return Ok(None);
         }
+
+        // TODO: Hardcoded values for now
+        let target_block: u64 = 10663776; // TODO move to argument
+        // let target_block: u64 = latest_block;
+
+        println!("Target consensus block: {:?}", target_block);
+
+        // // Introspect target block
+        // if latest_block < target_block {
+        //     info!("Target block not reached, yet.");
+        //     return Ok(None);
+        // }
+
+        let consensus_block: BeaconBlock<MainnetConsensusSpec> = client.rpc.get_block(target_block).await.unwrap();
+
+        let execution_payload = consensus_block.body.execution_payload();
+
+        let block_number = BlockNumberOrTag::from(*execution_payload.block_number());
+
+        println!("Execution block: {:?} (hash: {:?})", block_number, execution_payload.block_hash());
+
+        let receipts_root = execution_payload.receipts_root();
+
+        // self.wallet_filler target client
+
+        let rpc_url = env::var("SOURCE_EXECUTION_RPC_URL")
+            .expect("SOURCE_EXECUTION_RPC_URL not set")
+            .parse()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
+            .on_http(rpc_url);
+
+        let mut receipts: Option<Vec<TransactionReceipt>> = None;
+        match provider.get_block_receipts(block_number).await {
+            Ok(response) => {
+                receipts = response;
+            }
+            Err(err) => {
+                println!("Request error: {:?}", err);
+            }
+        }
+
+        if receipts.is_some() {
+
+            let json_str = r#"{"transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f","blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","blockNumber":"0x1475235","logsBloom":"0x00000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000010000000000000100000000000000000000000000000000000000000008800000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000080000000000000000000000000000000000000000000000002000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000","gasUsed":"0xb405","contractAddress":null,"cumulativeGasUsed":"0x6619be","transactionIndex":"0x50","from":"0xfb9dd8788bb1af2838b7de4492c47a94dec551ae","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","type":"0x2","effectiveGasPrice":"0x1ed71dcbe","logs":[{"blockHash":"0x2402c04e36b4841d5b94d75a3a03e97f7dc79871c46fab71129500a0a1e66532","address":"0xdac17f958d2ee523a2206206994597c13d831ec7","logIndex":"0x57","data":"0x00000000000000000000000000000000000000000000000000000000004c4b40","removed":false,"topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae","0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e"],"blockNumber":"0x1475235","transactionIndex":"0x50","transactionHash":"0x8dee55614b23e04a8f05f6d140698817cf2035910efe8a8633411d1e0c4b109f"}],"status":"0x1"}"#;
+
+            let receipt: TransactionReceipt = serde_json::from_str(json_str).unwrap();
+            println!("Deserialized receipt: {:?}", receipt);
+
+            let mut buf = Vec::<u8>::new();
+            ReceiptWithBloomEncoder::new(&receipt).encode_inner(&mut buf, false);
+            let nibbles = Nibbles::unpack(buf);
+            let (computed_receipts_root, proofs) = ordered_trie_root_with_encoder(receipts.unwrap().as_slice(), |r, buf| ReceiptWithBloomEncoder::new(r).encode_inner(buf, false), Some(vec![nibbles]));
+            println!("Receipts root {:?}, computed: {:?}", receipts_root, computed_receipts_root);
+            println!("Proofs {:?}", proofs);
+        } else {
+            println!("No receipts found: {:?}", receipts);
+        }
+
+        let mut block: Option<Block> = None;
+        match provider.get_block(BlockId::from(block_number), BlockTransactionsKind::Full).await {
+            Ok(response) => {
+                block = response;
+            }
+            Err(err) => {
+                println!("Request error: {:?}", err);
+            }
+        }
+
+        if block.is_some() {
+            let header = block.unwrap().header;
+            let block_header = BlockHeader::from(&header);
+            let computed_block_hash = block_header.hash_slow();
+            println!("Block hash {:?}, computed: {:?}", header.hash, computed_block_hash);
+        } else {
+            println!("No block found: {:?}", block);
+        }
+
+
+        if (true) {
+            let contract: Address = "0xdac17f958d2ee523a2206206994597c13d831ec7".parse().unwrap();
+            let signature = "Transfer(address,address,uint256)";
+            let topics_0 = keccak256(signature);
+
+            let from: Address = "0xfb9dd8788bb1af2838b7de4492c47a94dec551ae".parse().unwrap();
+            let topics_1 = from.into_word();
+            
+            let to: Address = "0xf02f51ec96a8e001674a762c4802a700a933938e".parse().unwrap();
+            let topics_2 = to.into_word();
+
+            let value = U256::from(5000000).abi_encode();
+            let data = Bytes::from(value);
+
+            let topics: Vec<B256> = vec![topics_0, topics_1, topics_2];
+            let log = Log::new(contract, topics, data);
+
+            // LogData { topics: [0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef, 0x000000000000000000000000fb9dd8788bb1af2838b7de4492c47a94dec551ae, 0x000000000000000000000000f02f51ec96a8e001674a762c4802a700a933938e], data: 0x00000000000000000000000000000000000000000000000000000000004c4b40 } }]
+            println!("Log: {:?}", log);
+        }
+
+
+        panic!("FINISHED: SKIP UPDATE"); // TODO
+
 
         // Optimization:
         // Skip processing update inside program if next_sync_committee is already stored in contract.
